@@ -13,6 +13,8 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
 	"github.com/lucas-clemente/quic-go/qerr"
+
+	"github.com/mami-project/plus-lib"
 )
 
 type nullAEAD struct {
@@ -36,13 +38,14 @@ type tlsSession struct {
 
 type serverTLS struct {
 	conn              net.PacketConn
+	plusConn				*PLUS.Connection
 	config            *Config
 	supportedVersions []protocol.VersionNumber
 	mintConf          *mint.Config
 	params            *handshake.TransportParameters
 	newMintConn       func(*handshake.CryptoStreamConn, protocol.VersionNumber) (handshake.MintTLS, <-chan handshake.TransportParameters, error)
 
-	newSession func(connection, sessionRunner, protocol.ConnectionID, protocol.ConnectionID, protocol.PacketNumber, *Config, handshake.MintTLS, *handshake.CryptoStreamConn, crypto.AEAD, *handshake.TransportParameters, protocol.VersionNumber, utils.Logger) (quicSession, error)
+	newSession func(connection, *PLUS.Connection, sessionRunner, protocol.ConnectionID, protocol.ConnectionID, protocol.PacketNumber, *Config, handshake.MintTLS, *handshake.CryptoStreamConn, crypto.AEAD, *handshake.TransportParameters, protocol.VersionNumber, utils.Logger) (quicSession, error)
 
 	sessionRunner sessionRunner
 	sessionChan   chan<- tlsSession
@@ -93,10 +96,18 @@ func newServerTLS(
 	return s, sessionChan, nil
 }
 
-func (s *serverTLS) HandleInitial(remoteAddr net.Addr, hdr *wire.Header, data []byte) {
+func (s *serverTLS) write(data []byte, addr net.Addr) (int, error) {
+	if !UsePLUS {
+		return s.conn.WriteTo(data, addr)
+	} else {
+		return s.plusConn.Write(data)
+	}
+}
+
+func (s *serverTLS) HandleInitial(plusConn *PLUS.Connection, remoteAddr net.Addr, hdr *wire.Header, data []byte) {
 	// TODO: add a check that DestConnID == SrcConnID
 	s.logger.Debugf("Received a Packet. Handling it statelessly.")
-	sess, connID, err := s.handleInitialImpl(remoteAddr, hdr, data)
+	sess, connID, err := s.handleInitialImpl(plusConn, remoteAddr, hdr, data)
 	if err != nil {
 		s.logger.Errorf("Error occurred handling initial packet: %s", err)
 		return
@@ -136,11 +147,11 @@ func (s *serverTLS) sendConnectionClose(remoteAddr net.Addr, clientHdr *wire.Hea
 	if err != nil {
 		return err
 	}
-	_, err = s.conn.WriteTo(data, remoteAddr)
+	_, err = s.write(data, remoteAddr)
 	return err
 }
 
-func (s *serverTLS) handleInitialImpl(remoteAddr net.Addr, hdr *wire.Header, data []byte) (packetHandler, protocol.ConnectionID, error) {
+func (s *serverTLS) handleInitialImpl(plusConn *PLUS.Connection, remoteAddr net.Addr, hdr *wire.Header, data []byte) (packetHandler, protocol.ConnectionID, error) {
 	if hdr.DestConnectionID.Len() < protocol.MinConnectionIDLenInitial {
 		return nil, nil, errors.New("dropping Initial packet with too short connection ID")
 	}
@@ -154,7 +165,7 @@ func (s *serverTLS) handleInitialImpl(remoteAddr net.Addr, hdr *wire.Header, dat
 		if err != nil {
 			return nil, nil, err
 		}
-		_, err = s.conn.WriteTo(vnp, remoteAddr)
+		_, err = s.write(vnp, remoteAddr)
 		return nil, nil, err
 	}
 
@@ -168,7 +179,7 @@ func (s *serverTLS) handleInitialImpl(remoteAddr net.Addr, hdr *wire.Header, dat
 		s.logger.Debugf("Error unpacking initial packet: %s", err)
 		return nil, nil, nil
 	}
-	sess, connID, err := s.handleUnpackedInitial(remoteAddr, hdr, frame, aead)
+	sess, connID, err := s.handleUnpackedInitial(plusConn, remoteAddr, hdr, frame, aead)
 	if err != nil {
 		if ccerr := s.sendConnectionClose(remoteAddr, hdr, aead, err); ccerr != nil {
 			s.logger.Debugf("Error sending CONNECTION_CLOSE: %s", ccerr)
@@ -178,7 +189,7 @@ func (s *serverTLS) handleInitialImpl(remoteAddr net.Addr, hdr *wire.Header, dat
 	return sess, connID, nil
 }
 
-func (s *serverTLS) handleUnpackedInitial(remoteAddr net.Addr, hdr *wire.Header, frame *wire.StreamFrame, aead crypto.AEAD) (packetHandler, protocol.ConnectionID, error) {
+func (s *serverTLS) handleUnpackedInitial(plusConn *PLUS.Connection, remoteAddr net.Addr, hdr *wire.Header, frame *wire.StreamFrame, aead crypto.AEAD) (packetHandler, protocol.ConnectionID, error) {
 	version := hdr.Version
 	bc := handshake.NewCryptoStreamConn(remoteAddr)
 	bc.AddDataForReading(frame.Data)
@@ -212,7 +223,7 @@ func (s *serverTLS) handleUnpackedInitial(remoteAddr net.Addr, hdr *wire.Header,
 		if err != nil {
 			return nil, nil, err
 		}
-		_, err = s.conn.WriteTo(data, remoteAddr)
+		_, err = s.write(data, remoteAddr)
 		return nil, nil, err
 	}
 	if alert != mint.AlertNoAlert {
@@ -235,6 +246,7 @@ func (s *serverTLS) handleUnpackedInitial(remoteAddr net.Addr, hdr *wire.Header,
 	s.logger.Debugf("Changing source connection ID to %s.", connID)
 	sess, err := s.newSession(
 		&conn{pconn: s.conn, currentAddr: remoteAddr},
+		plusConn,
 		s.sessionRunner,
 		hdr.SrcConnectionID,
 		connID,

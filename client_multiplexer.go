@@ -81,6 +81,7 @@ func (m *clientMultiplexer) AddHandler(c net.PacketConn, connID protocol.Connect
 }
 
 func (m *clientMultiplexer) listen(c net.PacketConn, p connManager) {
+	panic("not supported")
 	for {
 		data := *getPacketBuffer()
 		data = data[:protocol.MaxReceivePacketSize]

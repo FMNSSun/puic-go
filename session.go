@@ -19,6 +19,8 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
 	"github.com/lucas-clemente/quic-go/qerr"
+
+	"github.com/mami-project/plus-lib"
 )
 
 type unpacker interface {
@@ -83,6 +85,7 @@ type session struct {
 	config      *Config
 
 	conn connection
+	plusConn *PLUS.Connection
 
 	streamsMap   streamManager
 	cryptoStream cryptoStreamI
@@ -149,6 +152,7 @@ var _ streamSender = &session{}
 // newSession makes a new session
 func newSession(
 	conn connection,
+	plusConn *PLUS.Connection,
 	sessionRunner sessionRunner,
 	v protocol.VersionNumber,
 	connectionID protocol.ConnectionID,
@@ -161,6 +165,7 @@ func newSession(
 	handshakeEvent := make(chan struct{}, 1)
 	s := &session{
 		conn:           conn,
+		plusConn:       plusConn,
 		sessionRunner:  sessionRunner,
 		srcConnID:      connectionID,
 		destConnID:     connectionID,
@@ -182,10 +187,19 @@ func newSession(
 	if _, err := rand.Read(divNonce); err != nil {
 		return nil, err
 	}
+
+	var remoteAddr net.Addr
+
+	if !UsePLUS {
+		remoteAddr = s.conn.RemoteAddr()
+	} else {
+		remoteAddr = s.plusConn.RemoteAddr()
+	}
+
 	cs, err := newCryptoSetup(
 		s.cryptoStream,
 		connectionID,
-		s.conn.RemoteAddr(),
+		remoteAddr,
 		s.version,
 		divNonce,
 		scfg,
@@ -199,6 +213,7 @@ func newSession(
 	if err != nil {
 		return nil, err
 	}
+	s.plusConn = plusConn
 	s.cryptoStreamHandler = cs
 	s.unpacker = newPacketUnpackerGQUIC(cs, s.version)
 	s.streamsMap = newStreamsMapLegacy(s.newStream, s.config.MaxIncomingStreams, s.perspective)
@@ -221,6 +236,7 @@ func newSession(
 // declare this as a variable, so that we can it mock it in the tests
 var newClientSession = func(
 	conn connection,
+	plusConn *PLUS.Connection,
 	sessionRunner sessionRunner,
 	hostname string,
 	v protocol.VersionNumber,
@@ -235,6 +251,7 @@ var newClientSession = func(
 	handshakeEvent := make(chan struct{}, 1)
 	s := &session{
 		conn:           conn,
+		plusConn:       plusConn,
 		sessionRunner:  sessionRunner,
 		srcConnID:      connectionID,
 		destConnID:     connectionID,
@@ -290,6 +307,7 @@ var newClientSession = func(
 
 func newTLSServerSession(
 	conn connection,
+	plusConn *PLUS.Connection,
 	runner sessionRunner,
 	destConnID protocol.ConnectionID,
 	srcConnID protocol.ConnectionID,
@@ -305,6 +323,7 @@ func newTLSServerSession(
 	handshakeEvent := make(chan struct{}, 1)
 	s := &session{
 		conn:           conn,
+		plusConn:       plusConn,
 		sessionRunner:  runner,
 		config:         config,
 		srcConnID:      srcConnID,
@@ -349,6 +368,7 @@ func newTLSServerSession(
 // declare this as a variable, such that we can it mock it in the tests
 var newTLSClientSession = func(
 	conn connection,
+	plusConn *PLUS.Connection,
 	runner sessionRunner,
 	hostname string,
 	v protocol.VersionNumber,
@@ -363,6 +383,7 @@ var newTLSClientSession = func(
 	handshakeEvent := make(chan struct{}, 1)
 	s := &session{
 		conn:           conn,
+		plusConn:       plusConn,
 		sessionRunner:  runner,
 		config:         config,
 		srcConnID:      srcConnID,
@@ -1073,10 +1094,19 @@ func (s *session) sendPacket() (bool, error) {
 	return true, nil
 }
 
+func (s *session) write(data []byte) error {
+	if !UsePLUS {
+		return s.conn.Write(data)
+	} else {
+		_, err := s.plusConn.Write(data)
+		return err
+	}
+}
+
 func (s *session) sendPackedPacket(packet *packedPacket) error {
 	defer putPacketBuffer(&packet.raw)
 	s.logPacket(packet)
-	return s.conn.Write(packet.raw)
+	return s.write(packet.raw)
 }
 
 func (s *session) sendConnectionClose(quicErr *qerr.QuicError) error {
@@ -1088,7 +1118,7 @@ func (s *session) sendConnectionClose(quicErr *qerr.QuicError) error {
 		return err
 	}
 	s.logPacket(packet)
-	return s.conn.Write(packet.raw)
+	return s.write(packet.raw)
 }
 
 func (s *session) logPacket(packet *packedPacket) {
@@ -1185,7 +1215,7 @@ func (s *session) newCryptoStream() cryptoStreamI {
 
 func (s *session) sendPublicReset(rejectedPacketNumber protocol.PacketNumber) error {
 	s.logger.Infof("Sending public reset for connection %x, packet number %d", s.destConnID, rejectedPacketNumber)
-	return s.conn.Write(wire.WritePublicReset(s.destConnID, rejectedPacketNumber, 0))
+	return s.write(wire.WritePublicReset(s.destConnID, rejectedPacketNumber, 0))
 }
 
 // scheduleSending signals that we have data for sending
@@ -1248,11 +1278,19 @@ func (s *session) onStreamCompleted(id protocol.StreamID) {
 }
 
 func (s *session) LocalAddr() net.Addr {
-	return s.conn.LocalAddr()
+	if !UsePLUS {
+		return s.conn.LocalAddr()
+	} else {
+		return s.plusConn.LocalAddr()
+	}
 }
 
 func (s *session) RemoteAddr() net.Addr {
-	return s.conn.RemoteAddr()
+	if !UsePLUS {
+		return s.conn.RemoteAddr()
+	} else {
+		return s.plusConn.RemoteAddr()
+	}
 }
 
 func (s *session) getCryptoStream() cryptoStreamI {

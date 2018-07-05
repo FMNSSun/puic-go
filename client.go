@@ -16,12 +16,16 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
 	"github.com/lucas-clemente/quic-go/qerr"
+
+	"github.com/mami-project/plus-lib"
 )
 
 type client struct {
 	mutex sync.Mutex
 
 	conn     connection
+	plusConn *PLUS.Connection
+	plusConnManager *PLUS.ConnectionManager
 	hostname string
 
 	receivedRetry bool
@@ -167,8 +171,18 @@ func newClient(
 	if closeCallback != nil {
 		onClose = closeCallback
 	}
+
+	var plusConn *PLUS.Connection
+	var plusConnManager *PLUS.ConnectionManager
+
+	if UsePLUS {
+		plusConnManager, plusConn = PLUS.NewConnectionManagerClient(pconn, PLUS.RandomCAT(), remoteAddr)
+	}
+
 	c := &client{
 		conn:          &conn{pconn: pconn, currentAddr: remoteAddr},
+		plusConn:      plusConn,
+		plusConnManager: plusConnManager,
 		hostname:      hostname,
 		tlsConf:       tlsConf,
 		config:        config,
@@ -260,8 +274,24 @@ func (c *client) generateConnectionIDs() error {
 	return nil
 }
 
+func (c *client) remoteAddr() net.Addr {
+	if !UsePLUS {
+		return c.conn.RemoteAddr()
+	} else {
+		return c.plusConn.RemoteAddr()
+	}
+}
+
+func (c *client) localAddr() net.Addr {
+	if !UsePLUS {
+		return c.conn.LocalAddr()
+	} else {
+		return c.plusConn.LocalAddr()
+	}
+}
+
 func (c *client) dial(ctx context.Context) error {
-	c.logger.Infof("Starting new connection to %s (%s -> %s), source connection ID %s, destination connection ID %s, version %s", c.hostname, c.conn.LocalAddr(), c.conn.RemoteAddr(), c.srcConnID, c.destConnID, c.version)
+	c.logger.Infof("Starting new connection to %s (%s -> %s), source connection ID %s, destination connection ID %s, version %s", c.hostname, c.localAddr(), c.remoteAddr(), c.srcConnID, c.destConnID, c.version)
 
 	var err error
 	if c.version.UsesTLS() {
@@ -353,27 +383,46 @@ func (c *client) establishSecureConnection(ctx context.Context) error {
 // Listen listens on the underlying connection and passes packets on for handling.
 // It returns when the connection is closed.
 func (c *client) listen() {
-	var err error
-
 	for {
-		var n int
-		var addr net.Addr
 		data := *getPacketBuffer()
 		data = data[:protocol.MaxReceivePacketSize]
 		// The packet size should not exceed protocol.MaxReceivePacketSize bytes
 		// If it does, we only read a truncated packet, which will then end up undecryptable
-		n, addr, err = c.conn.Read(data)
-		if err != nil {
-			if !strings.HasSuffix(err.Error(), "use of closed network connection") {
+		if !UsePLUS {
+			n, addr, err := c.conn.Read(data)
+			if err != nil {
+				if !strings.HasSuffix(err.Error(), "use of closed network connection") {
+					c.mutex.Lock()
+					if c.session != nil {
+						c.session.Close(err)
+					}
+					c.mutex.Unlock()
+				}
+				break
+			}
+			c.handleRead(addr, data[:n])
+		} else {
+			_, plusPacket, remoteAddr, feedbackData, err := c.plusConnManager.ReadAndProcessPacket()
+
+			if err != nil {
+				if plusPacket == PLUS.InvalidPacket {
+					continue
+				}
+		
 				c.mutex.Lock()
-				if c.session != nil {
+   			if c.session != nil {
 					c.session.Close(err)
 				}
 				c.mutex.Unlock()
+				break
 			}
-			break
+
+			_ = feedbackData // TODO: handle feedback data
+
+			n := copy(data, plusPacket.Payload())
+
+			c.handleRead(remoteAddr, data[:n])
 		}
-		c.handleRead(addr, data[:n])
 	}
 }
 
@@ -476,7 +525,7 @@ func (c *client) handleGQUICPacket(p *receivedPacket) error {
 	}
 
 	if p.header.ResetFlag {
-		cr := c.conn.RemoteAddr()
+		cr := c.remoteAddr()
 		// check if the remote address and the connection ID match
 		// otherwise this might be an attacker trying to inject a PUBLIC_RESET to kill the connection
 		if cr.Network() != p.remoteAddr.Network() || cr.String() != p.remoteAddr.String() || !connID.Equal(c.srcConnID) {
@@ -539,6 +588,7 @@ func (c *client) createNewGQUICSession() (err error) {
 	}
 	c.session, err = newClientSession(
 		c.conn,
+		c.plusConn,
 		runner,
 		c.hostname,
 		c.version,
@@ -564,6 +614,7 @@ func (c *client) createNewTLSSession(
 	}
 	c.session, err = newTLSClientSession(
 		c.conn,
+		c.plusConn,
 		runner,
 		c.hostname,
 		c.version,

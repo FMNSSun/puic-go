@@ -14,6 +14,8 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
 	"github.com/lucas-clemente/quic-go/qerr"
+
+	"github.com/mami-project/plus-lib"
 )
 
 // packetHandler handles packets
@@ -59,6 +61,8 @@ type server struct {
 	tlsConf *tls.Config
 	config  *Config
 
+	plusConnManager *PLUS.ConnectionManager
+
 	conn net.PacketConn
 
 	supportsTLS bool
@@ -76,7 +80,7 @@ type server struct {
 
 	sessionRunner sessionRunner
 	// set as a member, so they can be set in the tests
-	newSession func(connection, sessionRunner, protocol.VersionNumber, protocol.ConnectionID, *handshake.ServerConfig, *tls.Config, *Config, utils.Logger) (quicSession, error)
+	newSession func(connection, *PLUS.Connection, sessionRunner, protocol.VersionNumber, protocol.ConnectionID, *handshake.ServerConfig, *tls.Config, *Config, utils.Logger) (quicSession, error)
 
 	logger utils.Logger
 }
@@ -262,20 +266,56 @@ func populateServerConfig(config *Config) *Config {
 
 // serve listens on an existing PacketConn
 func (s *server) serve() {
+
+	if UsePLUS {
+		if s.plusConnManager == nil {
+			s.plusConnManager = PLUS.NewConnectionManager(s.conn)
+		}
+	}
+
 	for {
 		data := *getPacketBuffer()
 		data = data[:protocol.MaxReceivePacketSize]
-		// The packet size should not exceed protocol.MaxReceivePacketSize bytes
-		// If it does, we only read a truncated packet, which will then end up undecryptable
-		n, remoteAddr, err := s.conn.ReadFrom(data)
-		if err != nil {
-			s.serverError = err
-			close(s.errorChan)
-			_ = s.Close()
-			return
+		var remoteAddr net.Addr
+		var plusConnection *PLUS.Connection
+
+		if !UsePLUS {
+			// The packet size should not exceed protocol.MaxReceivePacketSize bytes
+			// If it does, we only read a truncated packet, which will then end up undecryptable
+			n, remoteAddr_, err := s.conn.ReadFrom(data)
+			if err != nil {
+				s.serverError = err
+				close(s.errorChan)
+				_ = s.Close()
+				return
+			}
+			data = data[:n]
+			remoteAddr = remoteAddr_
+		} else {
+			plusConnection_, plusPacket, remoteAddr_, feedbackData, err := s.plusConnManager.ReadAndProcessPacket()
+
+			if err != nil {
+
+				if plusConnection_ == PLUS.InvalidConnection || plusPacket == PLUS.InvalidPacket {
+					continue
+				}
+
+				s.serverError = err
+				close(s.errorChan)
+				_ = s.Close()
+				return
+			}
+
+			_ = feedbackData // TODO: handle this
+
+			n := copy(data, plusPacket.Payload())
+			data = data[:n]
+			remoteAddr = remoteAddr_
+			plusConnection = plusConnection_
 		}
-		data = data[:n]
-		if err := s.handlePacket(remoteAddr, data); err != nil {
+
+
+		if err := s.handlePacket(remoteAddr, data, plusConnection); err != nil {
 			s.logger.Errorf("error handling packet: %s", err.Error())
 		}
 	}
@@ -305,7 +345,7 @@ func (s *server) Addr() net.Addr {
 	return s.conn.LocalAddr()
 }
 
-func (s *server) handlePacket(remoteAddr net.Addr, packet []byte) error {
+func (s *server) handlePacket(remoteAddr net.Addr, packet []byte, plusConn*PLUS.Connection) error {
 	rcvTime := time.Now()
 
 	r := bytes.NewReader(packet)
@@ -330,9 +370,9 @@ func (s *server) handlePacket(remoteAddr net.Addr, packet []byte) error {
 	packetData := packet[len(packet)-r.Len():]
 
 	if hdr.IsPublicHeader {
-		return s.handleGQUICPacket(session, hdr, packetData, remoteAddr, rcvTime)
+		return s.handleGQUICPacket(session, hdr, packetData, remoteAddr, rcvTime, plusConn)
 	}
-	return s.handleIETFQUICPacket(session, hdr, packetData, remoteAddr, rcvTime)
+	return s.handleIETFQUICPacket(session, hdr, packetData, remoteAddr, rcvTime, plusConn)
 }
 
 func (s *server) handleIETFQUICPacket(
@@ -341,6 +381,7 @@ func (s *server) handleIETFQUICPacket(
 	packetData []byte,
 	remoteAddr net.Addr,
 	rcvTime time.Time,
+	plusConn *PLUS.Connection,
 ) error {
 	if hdr.IsLongHeader {
 		if !s.supportsTLS {
@@ -354,7 +395,7 @@ func (s *server) handleIETFQUICPacket(
 
 		switch hdr.Type {
 		case protocol.PacketTypeInitial:
-			go s.serverTLS.HandleInitial(remoteAddr, hdr, packetData)
+			go s.serverTLS.HandleInitial(plusConn, remoteAddr, hdr, packetData)
 			return nil
 		case protocol.PacketTypeHandshake:
 			// nothing to do here. Packet will be passed to the session.
@@ -378,12 +419,21 @@ func (s *server) handleIETFQUICPacket(
 	return nil
 }
 
+func (s *server) write(data []byte, remoteAddr net.Addr, plusConn *PLUS.Connection) (int, error) {
+	if !UsePLUS {
+		return s.conn.WriteTo(data, remoteAddr)
+	} else {
+		return plusConn.Write(data)
+	}
+}
+
 func (s *server) handleGQUICPacket(
 	session packetHandler,
 	hdr *wire.Header,
 	packetData []byte,
 	remoteAddr net.Addr,
 	rcvTime time.Time,
+	plusConn *PLUS.Connection,
 ) error {
 	// ignore all Public Reset packets
 	if hdr.ResetFlag {
@@ -396,7 +446,7 @@ func (s *server) handleGQUICPacket(
 	// If we don't have a session for this connection, and this packet cannot open a new connection, send a Public Reset
 	// This should only happen after a server restart, when we still receive packets for connections that we lost the state for.
 	if !sessionKnown && !hdr.VersionFlag {
-		_, err := s.conn.WriteTo(wire.WritePublicReset(hdr.DestConnectionID, 0, 0), remoteAddr)
+		_, err := s.write(wire.WritePublicReset(hdr.DestConnectionID, 0, 0), remoteAddr, plusConn)
 		return err
 	}
 
@@ -415,7 +465,7 @@ func (s *server) handleGQUICPacket(
 			return errors.New("dropping small packet with unknown version")
 		}
 		s.logger.Infof("Client offered version %s, sending Version Negotiation Packet", hdr.Version)
-		_, err := s.conn.WriteTo(wire.ComposeGQUICVersionNegotiation(hdr.DestConnectionID, s.config.Versions), remoteAddr)
+		_, err := s.write(wire.ComposeGQUICVersionNegotiation(hdr.DestConnectionID, s.config.Versions), remoteAddr, plusConn)
 		return err
 	}
 
@@ -434,6 +484,7 @@ func (s *server) handleGQUICPacket(
 		s.logger.Infof("Serving new connection: %s, version %s from %v", hdr.DestConnectionID, version, remoteAddr)
 		sess, err := s.newSession(
 			&conn{pconn: s.conn, currentAddr: remoteAddr},
+			plusConn,
 			s.sessionRunner,
 			version,
 			hdr.DestConnectionID,
