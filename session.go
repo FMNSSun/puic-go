@@ -407,6 +407,11 @@ var newTLSClientSession = func(
 }
 
 func (s *session) preSetup() {
+	if UsePLUS {
+		plusConn := s.conn.(*plusconn)
+		plusConn.queueFunc = s.queuePLUSFeedback
+	}	
+
 	s.rttStats = &congestion.RTTStats{}
 	s.sentPacketHandler = ackhandler.NewSentPacketHandler(s.rttStats, s.logger, s.version)
 	s.connFlowController = flowcontrol.NewConnectionFlowController(
@@ -1220,6 +1225,12 @@ func (s *session) tryDecryptingQueuedPackets() {
 		s.handlePacket(p)
 	}
 	s.undecryptablePackets = s.undecryptablePackets[:0]
+}
+
+func (s *session) queuePLUSFeedback(data []byte) {
+	s.queueControlFrame(&wire.PLUSFeedbackFrame{
+		Data: data,
+	})
 }
 
 func (s *session) queueControlFrame(f wire.Frame) {

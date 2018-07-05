@@ -9,6 +9,7 @@ var UsePLUS bool = true
 type plusconn struct {
 	p *PLUS.Connection
 	m *PLUS.ConnectionManager
+	queueFunc func([]byte)
 }
 
 func (c *plusconn) Write(p []byte) error {
