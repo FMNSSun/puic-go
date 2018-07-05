@@ -174,15 +174,18 @@ func newClient(
 
 	var plusConn *PLUS.Connection
 	var plusConnManager *PLUS.ConnectionManager
+	var newConn connection
 
 	if UsePLUS {
 		plusConnManager, plusConn = PLUS.NewConnectionManagerClient(pconn, PLUS.RandomCAT(), remoteAddr)
+		go plusConnManager.Listen()
+		newConn = &plusconn{p: plusConn, m: plusConnManager}
+	} else {
+		newConn = &conn{pconn: pconn, currentAddr: remoteAddr}
 	}
 
 	c := &client{
-		conn:          &conn{pconn: pconn, currentAddr: remoteAddr},
-		plusConn:      plusConn,
-		plusConnManager: plusConnManager,
+		conn:          newConn,
 		hostname:      hostname,
 		tlsConf:       tlsConf,
 		config:        config,
@@ -274,24 +277,8 @@ func (c *client) generateConnectionIDs() error {
 	return nil
 }
 
-func (c *client) remoteAddr() net.Addr {
-	if !UsePLUS {
-		return c.conn.RemoteAddr()
-	} else {
-		return c.plusConn.RemoteAddr()
-	}
-}
-
-func (c *client) localAddr() net.Addr {
-	if !UsePLUS {
-		return c.conn.LocalAddr()
-	} else {
-		return c.plusConn.LocalAddr()
-	}
-}
-
 func (c *client) dial(ctx context.Context) error {
-	c.logger.Infof("Starting new connection to %s (%s -> %s), source connection ID %s, destination connection ID %s, version %s", c.hostname, c.localAddr(), c.remoteAddr(), c.srcConnID, c.destConnID, c.version)
+	c.logger.Infof("Starting new connection to %s (%s -> %s), source connection ID %s, destination connection ID %s, version %s", c.hostname, c.conn.LocalAddr(), c.conn.RemoteAddr(), c.srcConnID, c.destConnID, c.version)
 
 	var err error
 	if c.version.UsesTLS() {
@@ -388,41 +375,20 @@ func (c *client) listen() {
 		data = data[:protocol.MaxReceivePacketSize]
 		// The packet size should not exceed protocol.MaxReceivePacketSize bytes
 		// If it does, we only read a truncated packet, which will then end up undecryptable
-		if !UsePLUS {
-			n, addr, err := c.conn.Read(data)
-			if err != nil {
-				if !strings.HasSuffix(err.Error(), "use of closed network connection") {
-					c.mutex.Lock()
-					if c.session != nil {
-						c.session.Close(err)
-					}
-					c.mutex.Unlock()
-				}
-				break
-			}
-			c.handleRead(addr, data[:n])
-		} else {
-			_, plusPacket, remoteAddr, feedbackData, err := c.plusConnManager.ReadAndProcessPacket()
+		n, addr, err := c.conn.Read(data)
 
-			if err != nil {
-				if plusPacket == PLUS.InvalidPacket {
-					continue
-				}
-		
+		if err != nil {
+			if !strings.HasSuffix(err.Error(), "use of closed network connection") {
 				c.mutex.Lock()
-   			if c.session != nil {
+				if c.session != nil {
 					c.session.Close(err)
 				}
 				c.mutex.Unlock()
-				break
 			}
-
-			_ = feedbackData // TODO: handle feedback data
-
-			n := copy(data, plusPacket.Payload())
-
-			c.handleRead(remoteAddr, data[:n])
+			break
 		}
+
+		c.handleRead(addr, data[:n])
 	}
 }
 
@@ -525,7 +491,7 @@ func (c *client) handleGQUICPacket(p *receivedPacket) error {
 	}
 
 	if p.header.ResetFlag {
-		cr := c.remoteAddr()
+		cr := c.conn.RemoteAddr()
 		// check if the remote address and the connection ID match
 		// otherwise this might be an attacker trying to inject a PUBLIC_RESET to kill the connection
 		if cr.Network() != p.remoteAddr.Network() || cr.String() != p.remoteAddr.String() || !connID.Equal(c.srcConnID) {
@@ -588,7 +554,6 @@ func (c *client) createNewGQUICSession() (err error) {
 	}
 	c.session, err = newClientSession(
 		c.conn,
-		c.plusConn,
 		runner,
 		c.hostname,
 		c.version,
@@ -614,7 +579,6 @@ func (c *client) createNewTLSSession(
 	}
 	c.session, err = newTLSClientSession(
 		c.conn,
-		c.plusConn,
 		runner,
 		c.hostname,
 		c.version,

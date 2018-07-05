@@ -80,7 +80,7 @@ type server struct {
 
 	sessionRunner sessionRunner
 	// set as a member, so they can be set in the tests
-	newSession func(connection, *PLUS.Connection, sessionRunner, protocol.VersionNumber, protocol.ConnectionID, *handshake.ServerConfig, *tls.Config, *Config, utils.Logger) (quicSession, error)
+	newSession func(connection, sessionRunner, protocol.VersionNumber, protocol.ConnectionID, *handshake.ServerConfig, *tls.Config, *Config, utils.Logger) (quicSession, error)
 
 	logger utils.Logger
 }
@@ -482,9 +482,17 @@ func (s *server) handleGQUICPacket(
 		}
 
 		s.logger.Infof("Serving new connection: %s, version %s from %v", hdr.DestConnectionID, version, remoteAddr)
+
+		var newConn connection
+
+		if UsePLUS {
+			newConn = &plusconn{p: plusConn, m: s.plusConnManager}
+		} else {
+			newConn = &conn{pconn: s.conn, currentAddr: remoteAddr}
+		}
+
 		sess, err := s.newSession(
-			&conn{pconn: s.conn, currentAddr: remoteAddr},
-			plusConn,
+			newConn,
 			s.sessionRunner,
 			version,
 			hdr.DestConnectionID,
