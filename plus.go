@@ -3,13 +3,24 @@ package quic
 import "net"
 
 import "github.com/mami-project/plus-lib"
+import "github.com/lucas-clemente/quic-go/internal/wire"
 
 var UsePLUS bool = true
 
 type plusconn struct {
 	p *PLUS.Connection
 	m *PLUS.ConnectionManager
-	queueFunc func([]byte)
+	s *session
+}
+
+func (c *plusconn) SetSession(s *session) {
+	c.s = s
+	c.p.SetFeedbackChannel(c)
+}
+
+func (c *plusconn) SendFeedback(fb []byte) error {
+	c.s.queuePLUSFeedback(fb)
+	return nil
 }
 
 func (c *plusconn) Write(p []byte) error {
@@ -35,4 +46,10 @@ func (c *plusconn) RemoteAddr() net.Addr {
 
 func (c *plusconn) Close() error {
 	return c.p.Close()
+}
+
+func (s *session) queuePLUSFeedback(data []byte) {
+	s.queueControlFrame(&wire.PLUSFeedbackFrame{
+		Data: data,
+	})
 }

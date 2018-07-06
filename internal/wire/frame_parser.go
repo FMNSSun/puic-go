@@ -100,6 +100,11 @@ func parseIETFFrame(r *bytes.Reader, typeByte byte, v protocol.VersionNumber) (F
 		if err != nil {
 			err = qerr.Error(qerr.InvalidFrameData, err.Error())
 		}
+	case 0x11:
+		frame, err = ParsePLUSFeedbackFrame(r, v)
+		if err != nil {
+			err = qerr.Error(qerr.InvalidFrameData, err.Error())
+		}
 	default:
 		err = qerr.Error(qerr.InvalidFrameData, fmt.Sprintf("unknown type byte 0x%x", typeByte))
 	}
@@ -155,6 +160,11 @@ func parseGQUICFrame(r *bytes.Reader, typeByte byte, hdr *Header, v protocol.Ver
 		}
 	case 0x7:
 		frame, err = parsePingFrame(r, v)
+	case 0x11:
+		frame, err = ParsePLUSFeedbackFrame(r, v)
+		if err != nil {
+			err = qerr.Error(qerr.InvalidFrameData, err.Error())
+		}
 	default:
 		err = qerr.Error(qerr.InvalidFrameData, fmt.Sprintf("unknown type byte 0x%x", typeByte))
 	}

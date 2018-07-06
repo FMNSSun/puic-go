@@ -10,8 +10,8 @@ import (
 var (
 	errInvalidLenByte = errors.New("PLUSFeedbackFrame: Invalid len byte!")
 	errUnexpectedEndOfData = errors.New("PLUSFeedbackFrame: Unexpected end of data!")
-	errInvalidFrameType = errors.New("PLUSFeedbackFrame: Invalid fame type!")
-	plusFeedbackFrameType byte = 0x08
+	errInvalidFrameType = errors.New("PLUSFeedbackFrame: Invalid frame type!")
+	plusFeedbackFrameType byte = 0x11
 )
 
 // A PLUSFeedbackFrame in QUIC
@@ -27,7 +27,7 @@ func (f *PLUSFeedbackFrame) Length(version protocol.VersionNumber) protocol.Byte
 }
 
 // ParsePLUSFeedbackFrame reads a pcf frame
-func ParsePLUSFeedbackFrame(r *bytes.Reader) (*PLUSFeedbackFrame, error) {
+func ParsePLUSFeedbackFrame(r *bytes.Reader, version protocol.VersionNumber) (*PLUSFeedbackFrame, error) {
 	frame := &PLUSFeedbackFrame{}
 
 	// read type byte

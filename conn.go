@@ -12,6 +12,7 @@ type connection interface {
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
 	SetCurrentRemoteAddr(net.Addr)
+	SetSession(*session)
 }
 
 type conn struct {
@@ -22,6 +23,8 @@ type conn struct {
 }
 
 var _ connection = &conn{}
+
+func (c *conn) SetSession(s *session) {}
 
 func (c *conn) Write(p []byte) error {
 	_, err := c.pconn.WriteTo(p, c.currentAddr)

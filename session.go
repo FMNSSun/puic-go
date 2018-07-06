@@ -407,10 +407,7 @@ var newTLSClientSession = func(
 }
 
 func (s *session) preSetup() {
-	if UsePLUS {
-		plusConn := s.conn.(*plusconn)
-		plusConn.queueFunc = s.queuePLUSFeedback
-	}	
+	s.conn.SetSession(s)
 
 	s.rttStats = &congestion.RTTStats{}
 	s.sentPacketHandler = ackhandler.NewSentPacketHandler(s.rttStats, s.logger, s.version)
@@ -721,6 +718,8 @@ func (s *session) handleFrames(fs []wire.Frame, encLevel protocol.EncryptionLeve
 		case *wire.PathResponseFrame:
 			// since we don't send PATH_CHALLENGEs, we don't expect PATH_RESPONSEs
 			err = errors.New("unexpected PATH_RESPONSE frame")
+		case *wire.PLUSFeedbackFrame:
+			// whatever. we don't handle it yet. 
 		default:
 			return errors.New("Session BUG: unexpected frame type")
 		}
@@ -1225,12 +1224,6 @@ func (s *session) tryDecryptingQueuedPackets() {
 		s.handlePacket(p)
 	}
 	s.undecryptablePackets = s.undecryptablePackets[:0]
-}
-
-func (s *session) queuePLUSFeedback(data []byte) {
-	s.queueControlFrame(&wire.PLUSFeedbackFrame{
-		Data: data,
-	})
 }
 
 func (s *session) queueControlFrame(f wire.Frame) {

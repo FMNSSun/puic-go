@@ -4,11 +4,14 @@ import (
 	"flag"
 	"net/http"
 	"math/rand"
+	"os"
 
 	_ "net/http/pprof"
 
 	"github.com/lucas-clemente/quic-go/h2quic"
 	"github.com/lucas-clemente/quic-go/internal/utils"
+
+	"github.com/mami-project/plus-lib"
 )
 
 func initHttp(prefix string) {
@@ -48,6 +51,7 @@ func initHttp(prefix string) {
 
 func main() {
 	verbose := flag.Bool("v", false, "verbose")
+	verbosePlus := flag.Bool("vp", false, "verbose plus?")
 	laddr := flag.String("laddr", "localhost:6121", "Local address to listen on.")
 	certFilePath := flag.String("cert", "cert.pem", "Path to certificate file (PEM)")
 	keyFilePath := flag.String("key", "key.pem", "Path to key file (PEM) (unencrypted)")
@@ -55,6 +59,10 @@ func main() {
 	flag.Parse()
 
 	initHttp(*prefix)
+
+	if *verbosePlus {
+		PLUS.LoggerDestination = os.Stdout
+	}
 
 	if *verbose {
 		utils.DefaultLogger.SetLogLevel(utils.LogLevelDebug)

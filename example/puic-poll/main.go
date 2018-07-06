@@ -18,6 +18,8 @@ import (
 
 	"github.com/lucas-clemente/quic-go/h2quic"
 	"github.com/lucas-clemente/quic-go/internal/utils"
+
+	"github.com/mami-project/plus-lib"
 )
 
 // opens a file in append,wronly,create,0600 mode
@@ -137,9 +139,16 @@ func main() {
 	var certs = flag.String("certs", "", "Path to certificates to be trusted as Root CAs.")
 	var runs = flag.Int("runs", 10, "How many runs (one run constists of `collect` requests)")
 
+	verbosePlus := flag.Bool("vp", false, "verbose plus?")
+
+
+	if *verbosePlus {
+		PLUS.LoggerDestination = os.Stdout
+	}
+
 	flag.Parse()
 
-utils.DefaultLogger.SetLogLevel(utils.LogLevelInfo)
+	utils.DefaultLogger.SetLogLevel(utils.LogLevelInfo)
 	
 	// Logging setup
 	collectedStats := make([]Stats, *collect)
