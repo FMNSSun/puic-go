@@ -205,6 +205,8 @@ type Config struct {
 	MaxIncomingUniStreams int
 	// KeepAlive defines whether this peer will periodically send PING frames to keep the connection alive.
 	KeepAlive bool
+	// Local addr to be used by the client.
+	ClientLocalAddr *net.UDPAddr
 }
 
 // A Listener for incoming QUIC connections

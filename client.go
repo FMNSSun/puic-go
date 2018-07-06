@@ -70,6 +70,8 @@ func DialAddr(
 	return DialAddrContext(context.Background(), addr, tlsConf, config)
 }
 
+
+
 // DialAddrContext establishes a new QUIC connection to a server using the provided context.
 // The hostname for SNI is taken from the given address.
 func DialAddrContext(
@@ -83,7 +85,10 @@ func DialAddrContext(
 	if err != nil {
 		return nil, err
 	}
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+
+	laddr := config.ClientLocalAddr
+
+	udpConn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +247,11 @@ func populateClientConfig(config *Config, onPacketConn bool) *Config {
 		connIDLen = protocol.DefaultConnectionIDLength
 	}
 
+	clientLocalAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+	if config.ClientLocalAddr != nil {
+		clientLocalAddr = config.ClientLocalAddr
+	}
+
 	return &Config{
 		Versions:                              versions,
 		HandshakeTimeout:                      handshakeTimeout,
@@ -253,6 +263,7 @@ func populateClientConfig(config *Config, onPacketConn bool) *Config {
 		MaxIncomingStreams:                    maxIncomingStreams,
 		MaxIncomingUniStreams:                 maxIncomingUniStreams,
 		KeepAlive:                             config.KeepAlive,
+		ClientLocalAddr:                       clientLocalAddr,
 	}
 }
 
