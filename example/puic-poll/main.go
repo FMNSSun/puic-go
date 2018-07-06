@@ -18,6 +18,7 @@ import (
 
 	"github.com/lucas-clemente/quic-go/h2quic"
 	"github.com/lucas-clemente/quic-go/internal/utils"
+	"github.com/lucas-clemente/quic-go"
 
 	"github.com/mami-project/plus-lib"
 )
@@ -111,7 +112,7 @@ func wait(waitFrom int, waitTo int) {
 // load CA certs and set InsecureSkipVerify to false. 
 func loadCerts(certs string, hclient *http.Client) error {
 	rt := hclient.Transport.(*h2quic.RoundTripper)
-	rt.TLSClientConfig.InsecureSkipVerify = false
+	rt.TLSClientConfig.InsecureSkipVerify = true
 
 	// Load CA certs
 	caCert, err := ioutil.ReadFile(certs)
@@ -138,15 +139,17 @@ func main() {
 	var odir = flag.String("odir", "./tmp/", "Output directory.")
 	var certs = flag.String("certs", "", "Path to certificates to be trusted as Root CAs.")
 	var runs = flag.Int("runs", 10, "How many runs (one run constists of `collect` requests)")
-
+	var usePlus = flag.Bool("use-plus", true, "Use PLUS?")
 	verbosePlus := flag.Bool("vp", false, "verbose plus?")
+
+	flag.Parse()
+
+	quic.UsePLUS = *usePlus
 
 
 	if *verbosePlus {
 		PLUS.LoggerDestination = os.Stdout
 	}
-
-	flag.Parse()
 
 	utils.DefaultLogger.SetLogLevel(utils.LogLevelInfo)
 	

@@ -9,6 +9,7 @@ import (
 	_ "net/http/pprof"
 
 	"github.com/lucas-clemente/quic-go/h2quic"
+	"github.com/lucas-clemente/quic-go"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 
 	"github.com/mami-project/plus-lib"
@@ -56,7 +57,11 @@ func main() {
 	certFilePath := flag.String("cert", "cert.pem", "Path to certificate file (PEM)")
 	keyFilePath := flag.String("key", "key.pem", "Path to key file (PEM) (unencrypted)")
 	prefix := flag.String("prefix","/data/","Path prefix where the API methods should be available under (should start and end with a slash)")
+	usePlus := flag.Bool("use-plus", true, "Use PLUS?")
+
 	flag.Parse()
+
+	quic.UsePLUS = *usePlus
 
 	initHttp(*prefix)
 
